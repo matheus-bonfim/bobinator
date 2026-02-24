@@ -18,18 +18,22 @@ const int stepfuso = 8; //medida em milimetro
 const int stepsPerRevolution = 200;  
 const int velMotor_Passo = 300; 
 const long pos_per_turn = 24;
-volatile int posicao = 0;  // Variável para armazenar a posição do encoder
+volatile int pos_motor_encoder = 0;  // Variável para armazenar a posição do encoder
 volatile int ultimaA = LOW;  // Armazena o último estado do pino A
+const int period_sample = 4; // representa o inverso da porcentagem do periodo da rotacao do motor para estimar a vel absoluta
 
 Stepper myStepper(stepsPerRevolution, Ppin1, Ppin2, Ppin3, Ppin4);
 
 
-void move(float diameter, int velPasso){
+
+void move(float diameter, int vel_ang_motor){
   int steps;
-  myStepper.setSpeed(velPasso);
+  myStepper.setSpeed(vel_ang_motor);
   unsigned long tp3 = micros();
-  steps = round(diameter / ((1.8/360)*stepfuso));  
+  steps = round(diameter / ((1.8/360)*stepfuso)); 
+  digitalWrite(PpinEnable, HIGH); 
   myStepper.step(steps);
+  digitalWrite(PpinEnable, LOW); 
 }
 
 void encoderRotacao() {
@@ -41,25 +45,27 @@ void encoderRotacao() {
     if (estadoA == HIGH) {
       // Se B estiver LOW, estamos girando no direction horário
       if (estadoB == LOW) {
-        posicao--;
+        pos_motor_encoder--;
       } else {
-        posicao++;
+        pos_motor_encoder++;
       }
     } else {
       // Se B estiver HIGH, estamos girando no direction anti-horário
       if (estadoB == HIGH) {
-        posicao--;
+        pos_motor_encoder--;
       } else {
-        posicao++;
+        pos_motor_encoder++;
       }
     }
     ultimaA = estadoA;  // Atualiza o último estado de A
   }
 }
-void run(float voltas_total, float diametro_fio){
+void run(float total_turns, float diametro_fio){
   long oldMpos = 0;
   int velMotor = map(analogRead(pot),0,1023,0,255);
-  float voltas = 0;
+  unsigned long motor_period = 0;
+  int turns = 0;
+  int last_turns = 0;
   bool key = 1;
   bool pause = 1;
   bool state = 0;
@@ -70,7 +76,10 @@ void run(float voltas_total, float diametro_fio){
   unsigned long last_time_dir = 0;
   unsigned long oldtime = 0;
   unsigned long last_time_enc = 0;
-  long newMpos=0;
+  unsigned long parcial_time = 0;
+  float parcial_period;
+  long pos_motor=0;
+  long last_pos_motor = 0;
   int direction = 1; // comeca girando anti horario empurrando carrinho p direita
   float pos_fio = diametro_fio;
   int j=0;
@@ -81,20 +90,23 @@ void run(float voltas_total, float diametro_fio){
   int k=0, l=0;
   unsigned long tp_1; 
   bool hab_esq=0, hab_dir=1;
+  int vel_motor_rpm = 0;
 
   tempos_desloc[0] = 0;
   
-  while (voltas<voltas_total){
+  while (turns<total_turns){
     
     state = digitalRead(pinPause);
     if (state != last_state && (millis() - last_time) > 50){
       last_time=millis();
       if (state){
         pause=!pause;
+        parcial_time = millis();
       }
       
       last_state = state;  
     }
+    //Serial.println(pause);
 
     state_direction = digitalRead(pinChangeDir);
     if (state_direction != last_state_direction && (millis() - last_time_dir) > 50){
@@ -107,82 +119,43 @@ void run(float voltas_total, float diametro_fio){
 
     
     if (!pause){
+      Serial.println("tempo no inicio");
+      Serial.println(parcial_period);
       
-      newMpos = posicao;
-      if (newMpos==0) tempo = millis();
-      
-      
-      if (newMpos != oldMpos){
-        
-        if ((newMpos - oldMpos)>0){
-          voltas = voltas + 0.0416666666666667;
-          
-        }
-        else{
-          voltas = voltas - 0.0416666666666667;
-        }
-        oldMpos = newMpos;
-        /*if (abs(voltas - round(voltas))<0.001){
-          Serial.println("voltas:");
-          Serial.println(voltas);
-        }
-        
-       */
-       Serial.println(voltas);
-        //Serial.println(oldMpos);
-          
+      pos_motor = pos_motor_encoder;
+      if (pos_motor != 0){
+        turns = pos_motor / pos_per_turn;  
       }
-      
-      
-      
-      if (newMpos >= abs(pos_per_turn + 1)){
-        //Serial.println(tempo);
+      //Serial.println(turns);
+
+      if (pos_motor - last_pos_motor > pos_per_turn/period_sample){
+        last_pos_motor = pos_motor;
         
-        //Serial.println(voltas);
-        posicao = 0;
-        newMpos = 0;
-        ativa = 1;
-         
-        
-        // comando motor de passo
-        
-        
-          
+        parcial_period = millis() - parcial_time;
+        parcial_time = millis();
+        Serial.println("parcial Period");
+        Serial.println(parcial_period);
+
+
+        vel_motor_rpm = round(1 / (parcial_period * period_sample / 1000) * 60);
+        Serial.println("motor rpm");
+        Serial.println(vel_motor_rpm);
       }
-      
-      
-      
-      if ((newMpos >= 6) && (voltas<voltas_total - 1) && ativa){
-        
-        digitalWrite(PpinEnable, HIGH); 
-        Serial.println("Direction");
-        Serial.println(direction);
-        move(diametro_fio*direction, velMotor_Passo);
-        digitalWrite(PpinEnable, LOW);
-        pos_fio = pos_fio + diametro_fio;
-        tempos_desloc[k] = millis();
-        
-        if(l==16){
-          digitalWrite(PpinEnable, HIGH);    /// correcao a cada 16 voltas?
-          move((diametro_fio/2)*direction, velMotor_Passo);
-          digitalWrite(PpinEnable, LOW);
-          l=0;
-          
+
+      if (turns != last_turns){   // uma volta completa
+        last_turns = turns;
+        Serial.println("entrou aqui");
+        if(vel_motor_rpm > 0){
+          move(diametro_fio * direction, vel_motor_rpm);
         }
-        k++;
-        l++;
-        ativa = 0;
+        
+        Serial.println("passou aqui");
+
       }
-      
 
       velMotor = map(analogRead(pot),0,1023,0,255); //liga o motor
       //Serial.println(velMotor);
       analogWrite(pinPWM, velMotor);
-
-      
-
-
-
 
     }
     else{
@@ -192,9 +165,6 @@ void run(float voltas_total, float diametro_fio){
   }
   analogWrite(pinPWM, 255);
   digitalWrite(PpinEnable, LOW);
-  //for(int i=1;i<k;i++){
-   // Serial.println(tempos_desloc[i] - tempos_desloc[i-1]);
-  //}
   
 }
 
